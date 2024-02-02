@@ -1,0 +1,32 @@
+#!/usr/bin/env raku
+
+use ISP::Servers;
+use ISP::dsmadmc;
+
+my %SUR;
+my $SUR-in-TB               = 0;
+
+sub MAIN (
+    Str:D   :$isp-admin!,                           #= ISP admin name
+    Bool    :$detail,                               #= Display table
+) {
+    my ISP::dsmadmc $dsmadmc;
+    my @cmd                 = ['select', 'TOTALSUROCC_TB', 'from', 'STATUS'];
+    my @isp-servers         = ISP::Servers.new(:$isp-admin).isp-servers.keys.sort;
+    for @isp-servers -> $isp-server {
+        $dsmadmc           .= new(:$isp-server, :$isp-admin);
+        my $result          = $dsmadmc.execute(@cmd);
+        %SUR{$isp-server}   = $result[0]<TOTALSUROCC_TB>.Real;
+        $SUR-in-TB         += %SUR{$isp-server};
+        printf "%-20s%6.2f\n", $isp-server, %SUR{$isp-server} if $detail;
+    }
+    if $detail {
+        printf "%-20s------\n", '';
+        printf "%-20s%6.2f\n", '', $SUR-in-TB;
+    }
+    else {
+        put $SUR-in-TB;
+    }
+}
+
+=finish
