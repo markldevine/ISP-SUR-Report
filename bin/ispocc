@@ -1,0 +1,164 @@
+#!/usr/bin/env raku
+
+use ISP::Server::Reporter;
+
+constant \K                     = 1024;
+constant \M                     = K * 1024;
+constant \G                     = M * 1024;
+constant \T                     = G * 1024;
+constant \P                     = T * 1024;
+
+sub to-bytes (Str:D $num-unit) {
+    my $no-commas               = $num-unit.comb.grep(none /','/).join;
+    if $no-commas ~~ / ^ (\d+ '.'* \d*) \s* (\w*) $ / {
+        my $real                = $0.Str.comb.grep(/ \d | '.' /).join;
+        my $unit                = $1.Str with $1;
+        given $unit {
+            when 'K'            { return $real * K }
+            when 'M'            { return $real * M }
+            when 'G'            { return $real * G }
+            when 'T'            { return $real * T }
+            when 'P'            { return $real * P }
+            default             { return $real;    }
+        }
+    }
+}
+
+sub bytes-to-unit (Real:D $real) {
+    given $real.abs {
+        when $_ >= P            { return ($real / P).fmt("%.1f P"); }
+        when $_ >= T            { return ($real / T).fmt("%.1f T"); }
+        when $_ >= G            { return ($real / G).fmt("%.1f G"); }
+        when $_ >= M            { return ($real / M).fmt("%.1f M"); }
+        when $_ >= K            { return ($real / K).fmt("%.1f K"); }
+        default                 { return $real;                     }
+    }
+}
+
+class ISP-Node-Occupancy-statistics {
+
+    has Int $!number-of-files       = 0;
+    has Int $.number-of-files-delta = 0;
+    has Int $!last-number-of-files  = -1;
+
+    method number-of-files (Str :$number-of-files) {
+        return $!number-of-files    without $number-of-files;
+        my $real-number-of-files    = $number-of-files.comb.grep(/ \d | '.' /).join.Int;
+        $!last-number-of-files      = $real-number-of-files unless $!last-number-of-files >= 0;
+        $!number-of-files-delta     = $real-number-of-files - $!last-number-of-files;
+        $!number-of-files           = $real-number-of-files;
+        $!last-number-of-files      = $real-number-of-files;
+    }
+
+    has Rat $!physical              = 0.0;
+    has Rat $.physical-delta        = 0.0;
+    has Rat $!last-physical         = -1.0;
+
+    method physical (Str :$physical) {
+        return $!physical           without $physical;
+        my $real-physical           = to-bytes($physical).Rat;
+        $!last-physical             = $real-physical unless $!last-physical >= 0.0;
+        $!physical-delta            = $real-physical - $!last-physical;
+        $!physical                  = $real-physical;
+        $!last-physical             = $real-physical;
+    }
+
+    has Rat $!logical               = 0.0;
+    has Rat $.logical-delta         = 0.0;
+    has Rat $!last-logical          = -1.0;
+
+    method logical (Str :$logical) {
+        return $!logical            without $logical;
+        my $real-logical            = to-bytes($logical).Rat;
+        $!last-logical              = $real-logical if $!last-logical < 0.0;
+        $!last-logical              = $real-logical unless $!last-logical >= 0.0;
+        $!logical-delta             = $real-logical - $!last-logical;
+        $!logical                   = $real-logical;
+        $!last-logical              = $real-logical;
+    }
+}
+
+class Reporter does ISP::Server::Reporter {
+
+    has %!statistics;
+
+    method process-rows (@sessions) {
+        my Str      $node-name;                             #                   Node Name: NNNNNNNN18
+        my Str      $type;                                  #                        Type: Bkup
+        my Str      $filespace-name;                        #              Filespace Name: \\NNNNNNNN18\e$
+        my Str      $fsid;                                  #                        FSID: 2
+        my Str      $storage-pool-name;                     #           Storage Pool Name: NNN_DC
+        my Str      $number-of-files;                       #             Number of Files: 2,512,740
+        my Str      $physical;                              #Physical Space Occupied (MB): -
+        my Str      $logical;                               # Logical Space Occupied (MB): 1,955,623.38
+
+        my $row;
+        for @sessions -> $session {
+            $node-name          = '';   $node-name          = $session{'Node Name'}.Str                     if $session{'Node Name'};
+            $type               = '';   $type               = $session{'Type'}.Str                          if $session{'Type'};
+            $filespace-name     = '';   $filespace-name     = $session{'Filespace Name'}.Str                if $session{'Filespace Name'};
+            $fsid               = '';   $fsid               = $session{'FSID'}.Str                          if $session{'FSID'};
+            $storage-pool-name  = '';   $storage-pool-name  = $session{'Storage Pool Name'}.Str             if $session{'Storage Pool Name'};
+            $number-of-files    = '';   $number-of-files    = $session{'Number of Files'}.Str               if $session{'Number of Files'};
+            $physical           = '';   $physical           = $session{'Physical Space Occupied (MB)'}.Str  if $session{'Physical Space Occupied (MB)'};
+            $logical            = '';   $logical            = $session{'Logical Space Occupied (MB)'}.Str   if $session{'Logical Space Occupied (MB)'};
+            %!statistics{$node-name}{$filespace-name}       = ISP-Node-Occupancy-statistics.new   unless %!statistics{$node-name}{$filespace-name}:exists;
+            %!statistics{$node-name}{$filespace-name}.number-of-files(:$number-of-files);
+            %!statistics{$node-name}{$filespace-name}.physical(:physical($physical ~ ' M'));
+            %!statistics{$node-name}{$filespace-name}.logical(:logical($logical ~ ' M'));
+            $row                = Array.new;
+            $row.push:          $node-name;
+            $row.push:          $type;
+            $row.push:          $filespace-name;
+            $row.push:          $fsid;
+            $row.push:          $storage-pool-name;
+            $row.push:          $number-of-files;
+            $row.push:          %!statistics{$node-name}{$filespace-name}.number-of-files-delta;
+            $row.push:          $physical;
+            $row.push:          bytes-to-unit(%!statistics{$node-name}{$filespace-name}.physical-delta);
+            $row.push:          $logical;
+            $row.push:          bytes-to-unit(%!statistics{$node-name}{$filespace-name}.logical-delta);
+            self.table.add-row: $row;
+        }
+    }
+}
+
+sub MAIN (
+    Str:D   :$isp-server!,                          #= ISP server name
+    Str:D   :$isp-admin!,                           #= ISP server name
+    Int:D   :$interval      where * >= 5    = 58,   #= Refresh every --interval seconds (minimum 5s)
+    Int:D   :$count                         = 1,    #= Number of refreshes (0 is infinity)
+    Bool    :$grid,                                 #= Full table grid
+    Bool    :$clear,                                #= Clear the screen with each iteration
+    Str     :$node,                                 #= ISP NODE name
+) {
+    my @command     = ['QUERY', 'OCCUPANCY'];
+    @command.append: $node if $node;
+    my @fields;
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Node Name'),            :alignment('l'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Type'),                 :alignment('c'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Filespace Name'),       :alignment('l'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('FSID'),                 :alignment('c'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Storage Pool Name'),    :alignment('l'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Number of Files'),      :alignment('r'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Files Δ'),            :alignment('r'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Physical (MB)'),        :alignment('r'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Physical Δ'),         :alignment('r'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Logical (MB)'),         :alignment('r'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Logical Δ'),          :alignment('r'));
+    my $reporter    = Reporter.new(
+                                    :$isp-server,
+                                    :$isp-admin,
+                                    :$count,
+                                    :$grid,
+                                    :$clear,
+                                    :$interval,
+                                    :title('IBM Spectrum Protect: ' ~ $isp-server ~ ' Occupancy'),
+                                    :@command,
+                                    :@fields,
+                                    :sort-by('Node Name'),
+                                  );
+    $reporter.loop;
+}
+
+=finish
